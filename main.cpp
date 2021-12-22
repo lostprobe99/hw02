@@ -5,10 +5,11 @@
 struct Node {
     // 这两个指针会造成什么问题？请修复
     // 产生了循环引用，a 指向 b，b 指向 a，引用计数无法清零
-    std::shared_ptr<Node> next;
+    // std::shared_ptr<Node> next;
+    std::unique_ptr<Node> next;
     // std::shared_ptr<Node> prev;
-    std::weak_ptr<Node> prev;
-    // std::unique_ptr<Node> prev;
+    // std::weak_ptr<Node> prev;
+    Node* prev;
     // 如果能改成 unique_ptr 就更好了!
 
     int value;
@@ -16,23 +17,19 @@ struct Node {
     Node(int value) : value(value) {}  // 有什么可以改进的？
 
     void insert(int value) {
-        auto node = std::make_shared<Node>(value);
-        node->value = value;
-        node->next = next;
+        auto node = std::make_unique<Node>(value);
         node->prev = prev;
-        if (!prev.expired()) // 检查如果该弱引用未失效
-            prev.lock()->next = node;   // 则生成一个临时的 shared_ptr 进行调用
-            // prev->next = node;
-        if (next)
-            next->prev = node;
+        prev->next->prev = node.get();
+        node->next = std::move(prev->next);
+        prev->next = std::move(node);
     }
 
     void erase() {
-        if (!prev.expired())
-            prev.lock()->next = next;
-            // prev->next = next;
-        if (next)
+        if (next)   // 先处理裸指针
             next->prev = prev;
+        if (prev)
+            prev->next = std::move(next);
+            // prev->next = next;
     }
 
     ~Node() {
@@ -42,7 +39,7 @@ struct Node {
 };
 
 struct List {
-    std::shared_ptr<Node> head;
+    std::unique_ptr<Node> head;
 
     List() = default;
 
@@ -50,15 +47,16 @@ struct List {
         printf("List 被拷贝！\n");
         // head = other.head;  // 这是浅拷贝！
         // 请实现拷贝构造函数为 **深拷贝**
-        head = std::make_shared<Node>(other.head->value);
-        auto tail = head;
-        auto p = other.front()->next;
+        head = std::make_unique<Node>(other.head->value);
+        auto tail = head.get(); // tail 用于追踪 this
+        auto p = other.front()->next.get();   // p 用于追踪 other
         while(p != nullptr) {
-            auto node = std::make_shared<Node>(p->value);
-            tail->next = node;
+            auto node = std::make_unique<Node>(p->value);
             node->prev = tail;
-            tail = node;
-            p = p->next;
+            tail->next = std::move(node);
+
+            tail = tail->next.get();
+            p = p->next.get();
         }
     }
 
@@ -74,16 +72,16 @@ struct List {
 
     int pop_front() {
         int ret = head->value;
-        head = head->next;
+        head = std::move(head->next); // = head->next;
         return ret;
     }
 
     void push_front(int value) {
-        auto node = std::make_shared<Node>(value);
-        node->next = head;
+        auto node = std::make_unique<Node>(value);
         if (head)
-            head->prev = node;
-        head = node;
+            head->prev = node.get();
+        node->next = std::move(head);
+        head = std::move(node);
     }
 
     Node *at(size_t index) const {
@@ -115,11 +113,11 @@ int main() {
     a.push_front(4);
     a.push_front(1);
 
-    print(a);   // [ 1 4 9 2 8 5 7 ]
+    print(a);   // [ 1 4 9 2 8 5 7 ]    // ok
 
     a.at(2)->erase();
 
-    print(a);   // [ 1 4 2 8 5 7 ]
+    print(a);   // [ 1 4 2 8 5 7 ]     // ok
 
     List b = a;
 
@@ -131,6 +129,7 @@ int main() {
     b = {};
     a = {};
     // a 和 b 一共 11 次析构
+    // valgrind: no leaks are possible
 
     return 0;
 }
